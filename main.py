@@ -5,14 +5,19 @@ from typing import List
 from pwdlib import PasswordHash
 from jose import jwt, JWTError, ExpiredSignatureError
 from datetime import datetime, timedelta, timezone
+from sqlalchemy.orm import Session
+from database import engine, get_db
+from models import Base, ItemModel
 
 
 # Instantiate FastAPI instance
 app = FastAPI()
 
+Base.metadata.create_all(bind=engine)
+
 SECRET_KEY = 'supersecretkey'
 ALGORITHM = 'HS256'
-TOKEN_EXPIRE = 10
+TOKEN_EXPIRE = 10*60
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login", auto_error=False)
 
 # token = jwt.encode(
@@ -53,10 +58,10 @@ class UserResponse(BaseModel):
     username: str
 
 
-item_db = {
-    1: {"id": 1, "name": "test1"},
-    2: {"id": 2, "name": "test2"}
-}
+# item_db = {
+#     1: {"id": 1, "name": "test1"},
+#     2: {"id": 2, "name": "test2"}
+# }
 
 # item_db_counter = 1
 
@@ -181,43 +186,62 @@ def home():
 
 # Read 
 @app.get("/item", response_model=List[ItemResponse])
-def get_item(current_user: dict = Depends(get_current_user)):
-    return list(item_db.values())
+def get_item(
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    return db.query(ItemModel).all()
 
 # Create
 @app.post("/item/new", response_model=ItemResponse)
-def new_item(item: Item, current_user: dict = Depends(get_current_user)):
-    new_id = len(item_db) + 1
-    new_item = {
-        "id": new_id,
-        "name": item.name
-    }
+def new_item(
+    item: Item, 
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    db_item = ItemModel(name=item.name)
 
-    item_db[new_id] = new_item
+    db.add(db_item)
+    db.commit()
+    db.refresh(db_item)
 
-    return new_item
+    return db_item
 
 # Update
 @app.put("/item/{item_id}", response_model=ItemResponse)
-def update_item(item_id: int, item: Item, current_user: dict = Depends(get_current_user)):
-    db_item = item_db.get(item_id)
+def update_item(
+    item_id: int, 
+    item: Item, 
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    db_item = db.query(ItemModel).filter(ItemModel.id == item_id).first()
 
     if not db_item:
         raise HTTPException(404, "Item not found")
 
-    db_item["name"] = item.name
+    db_item.name = item.name
+
+    db.commit()
+    db.refresh(db_item)
+
     return db_item
 
 
 # Delete
 @app.delete("/item/{item_id}", response_model=ItemResponse)
-def delete_item(item_id: int, current_user: dict = Depends(get_current_user)):
-    db_item = item_db.get(item_id)
+def delete_item(
+    item_id: int, 
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    db_item = db.query(ItemModel).filter(ItemModel.id == item_id).first()
 
     if not db_item:
         raise HTTPException(404, "Item not found")
     
-    del item_db[item_id]
+    db.delete(db_item)
+    db.commit()
 
     return db_item
 
