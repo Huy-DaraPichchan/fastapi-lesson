@@ -7,7 +7,7 @@ from jose import jwt, JWTError, ExpiredSignatureError
 from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import Session
 from database import engine, get_db
-from models import Base, ItemModel
+from models import Base, ItemModel, UserModel
 
 
 # Instantiate FastAPI instance
@@ -38,7 +38,7 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login", auto_error=False)
 
 
 # Define a mock up database 
-user_db = {}
+# user_db = {}
 
 
 # Password hashing
@@ -88,51 +88,34 @@ def verify_password(password: str, hashed_password: str):
 
 # Auth endpoints
 @app.post("/register")
-def register(user: UserRegister):
-    if user.username in user_db:
-        raise HTTPException(400, "User already exists.")
-    
-    user_db[user.username] = {
-        "username": user.username,
-        "password": hash_password(user.password)
-    }
-
-    return {"message": "User created."}
-
-@app.get("/users", response_model=List[UserResponse])
-def get_users():
-    return list(user_db.values())
-
-
-@app.post("/login")
-def login(form_data: OAuth2PasswordRequestForm = Depends()):
-
-    db_user = user_db.get(form_data.username)
-
-    if not db_user:
-        raise HTTPException(401, "Invalid credentials")
-    
-    if not verify_password(form_data.password, db_user["password"]):
-        raise HTTPException(401, "Invalid credentials")
-    
-    expire = datetime.now(timezone.utc) + timedelta(seconds=TOKEN_EXPIRE)
-    
-    token = jwt.encode(
-        {
-            'sub': form_data.username,
-            'exp': expire
-        },
-        SECRET_KEY,
-        algorithm=ALGORITHM
+def register(
+    user: UserRegister,
+    db: Session = Depends(get_db)
+):
+    db_user = (
+        db.query(UserModel).filter(UserModel.username == user.username).first()
     )
 
-    return {
-        "access_token": token,
-        "token_type": "bearer"
-    }
+    if db_user:
+        raise HTTPException(400, "User already exists.")
+    
+    new_user = UserModel(
+        username=user.username,
+        password=hash_password(user.password)
+    )
+
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+
+    return new_user
+
 
 # Authorization Endpoint
-def get_current_user(token: str = Depends(oauth2_scheme)):
+def get_current_user(
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db)
+):
 
     if not token:
         raise HTTPException(
@@ -159,15 +142,56 @@ def get_current_user(token: str = Depends(oauth2_scheme)):
     if not username:
         raise HTTPException(401, "Invalid token")
 
-    user = user_db.get(username)
+    user = (
+        db.query(UserModel).filter(UserModel.username == username).first()
+    )
 
     if not user:
         raise HTTPException(401, "User not found")
 
     return user
 
+
+@app.get("/users", response_model=List[UserResponse])
+def get_users(
+    current_user: UserModel = Depends(get_current_user),
+    db: Session = Depends(get_db)
+    ):
+    return db.query(UserModel).all()
+
+
+@app.post("/login")
+def login(
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    db: Session = Depends(get_db)
+):
+
+    db_user = db.query(UserModel).filter(UserModel.username == form_data.username).first()
+
+    if not db_user:
+        raise HTTPException(401, "Invalid credentials")
+    
+    if not verify_password(form_data.password, db_user.password):
+        raise HTTPException(401, "Invalid credentials")
+    
+    expire = datetime.now(timezone.utc) + timedelta(seconds=TOKEN_EXPIRE)
+    
+    token = jwt.encode(
+        {
+            'sub': form_data.username,
+            'exp': expire
+        },
+        SECRET_KEY,
+        algorithm=ALGORITHM
+    )
+
+    return {
+        "access_token": token,
+        "token_type": "bearer"
+    }
+
 @app.get("/me", response_model=UserResponse)
-def get_me(current_user: dict = Depends(get_current_user)):
+def get_me(current_user: UserModel = Depends(get_current_user)):
     return current_user
 
 
